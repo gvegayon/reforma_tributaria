@@ -1,66 +1,10 @@
 rm(list=ls())
 
-# Funcion para calcular el impuesto
-impuesto <- function(income) { 
-
-	# Estableciendo el tramo
-	if      (income <= 567702 ) {
-    btrate <- 0
-    trate  <- 0
-    lbound <- 0
-	}
-	else if (income <= 1261560) {
-    btrate <- 0 # 0.022
-    trate  <- 0.04
-    lbound <- 567702
-	}
-	else if (income <= 2102600) {
-    btrate <- 0.022 # 0.0452
-    trate  <- 0.08
-    lbound <- 1261560
-	}
-	else if (income <= 2943640) {
-    btrate <- 0.0452 # 0.0709
-    trate  <- 0.135
-    lbound <- 2102600
-	}
-	else if (income <= 3784680) {
-    btrate <- 0.0709 # 0.1062
-    trate  <- 0.23
-    lbound <- 2943640
-	}
-	else if (income <= 5046240) {
-    btrate <- 0.1062 # 0.1557
-    trate  <- 0.304
-    lbound <- 3784680
-	}
-	else if (income <= 6307800) {
-    btrate <- 0.1557 # 0.1955
-    trate  <- 0.355
-    lbound <- 5046240
-	}
-	else                        {
-		btrate <- 0.1955
-    trate  <- .355
-		lbound <- 6307800
-	}
-  
-	# Calculando el monto de impuesto
-  return((btrate*lbound + (income-lbound)*trate)*12)
-}
-
-# Funcion para calcular la tasa impuesto implicita
-tasa_implicita <- function(income, pcompra, pventa) {
-	impuesto_hoy <- impuesto(income)
-	impuesto_ref <- impuesto(income + (pventa-pcompra)/12)
-
-	return((impuesto_ref - impuesto_hoy)/pventa*100)
-}
-
 # Parametros para la simulacion
 uf            <- 23700
 ingresos      <- seq(500000,6000000,by=50000)
 pcompra       <- c(1000, 1500, 2000, 3000, 5000)
+pcompra_sim   <- seq(1000, 5000, by=10)
 tasa_retorno  <- seq(from=1.1,to=3,by=.2)
 ingobjetivo   <- 564329 # Ingreso objetivo a comparar
 
@@ -82,13 +26,110 @@ rentas_minimas <- as.data.frame(rentas_minimas)
 colnames(rentas_minimas) <- c("precio","ingreso")
 modelo <- lm(precio~ingreso, data=rentas_minimas)
 
-resultados <- NULL
-for (i in ingresos)
-	for (pc in pcompra)
-		for (pv in tasa_retorno) {
-			tasa <- tasa_implicita(i, pc*uf, pc*pv*uf)
-			resultados <- rbind(resultados,cbind(i,pc,pv*pc,pv,tasa))
-		}
+tasa_implicita <- function(income, pcompra, pventa) {
+  impuesto_hoy <- impuesto(income)
+  impuesto_ref <- impuesto(income + (pventa-pcompra)/12)
+  
+  return((impuesto_ref - impuesto_hoy)/pventa*100)
+}
+
+Rcpp::sourceCpp(code='
+#include <Rcpp.h>
+using namespace Rcpp;
+
+/* Funcion que calcula impuesto */
+// [[Rcpp::export]]
+double impuesto(double income) {
+  double btrate, trate, lbound;
+  
+  if      (income <= 567702 ) {
+  btrate = 0;
+  trate  = 0;
+  lbound = 0;
+  }
+  else if (income <= 1261560) {
+  btrate = 0;
+  trate  = 0.04;
+  lbound = 567702;
+  }
+  else if (income <= 2102600) {
+  btrate = 0.022;
+  trate  = 0.08;
+  lbound = 1261560;
+  }
+  else if (income <= 2943640) {
+  btrate = 0.0452;
+  trate  = 0.135;
+  lbound = 2102600;
+  }
+  else if (income <= 3784680) {
+  btrate = 0.0709;
+  trate  = 0.23;
+  lbound = 2943640;
+  }
+  else if (income <= 5046240) {
+  btrate = 0.1062;
+  trate  = 0.304;
+  lbound = 3784680;
+  }
+  else if (income <= 6307800) {
+  btrate = 0.1557;
+  trate  = 0.355;
+  lbound = 5046240;
+  }
+  else                        {
+  btrate = 0.1955;
+  trate  = .355;
+  lbound = 6307800;
+  }
+  
+  /* Calculando el monto de impuesto */
+  return (btrate*lbound + (income-lbound)*trate)*12;
+}
+
+/* Calcula el impuesto a pagar */
+// [[Rcpp::export]]
+NumericMatrix simula_impuesto(
+  NumericVector ingresos,
+  NumericVector pcompra,
+  NumericVector tasa_retorno,
+  double uf = 23700.0
+){
+
+  int Ni = ingresos.size();
+  int Np = pcompra.size();
+  int Nt = tasa_retorno.size();
+  double t0 = 0.0;
+  double tT = 0.0;
+  double pventa = 0.0;
+
+  NumericMatrix out(Ni*Np*Nt,5);
+ 
+  int j=-1;
+  for(int i=0;i<Ni;i++)
+    for(int pc=0;pc<Np;pc++)
+      for(int pv=0;pv<Nt;pv++)
+      {
+        out(++j,0) = ingresos[i];
+        out(j,1)   = pcompra[pc];
+        out(j,2)   = tasa_retorno[pv]*pcompra[pc];
+        out(j,3)   = tasa_retorno[pv];
+
+        /* Calculando tasa */
+        pventa = pcompra[pc]*tasa_retorno[pv]*uf;
+        t0     = impuesto(ingresos[i]) ;
+        tT     = impuesto(ingresos[i] + (pventa-pcompra[pc]*uf)/12.0) ;      
+
+        out(j,4)   = (tT-t0)/pventa*100.0;
+      }
+  return out;
+
+}
+                  ', rebuild=TRUE)
+
+
+resultados <- 
+  simula_impuesto(ingresos,pcompra_sim,tasa_retorno)
 
 resultados <- as.data.frame(resultados)
 colnames(resultados) <- c("ingreso","pcompra","pventa","ganancia","tasa")
@@ -157,7 +198,7 @@ legend("top",
 	title="Precio de compra (UF)")
 
 text(50,5,
-	expression("Tasa Implícita"~"="~frac(Delta~"Impuesto","Precio Compra")))
+	expression("Tasa Implícita"~"="~frac(Delta~"Impuesto","Precio Venta")))
 
 par(old.par)
 par(oma=c(0,0,2,0))
